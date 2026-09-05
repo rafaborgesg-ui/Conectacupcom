@@ -1343,16 +1343,23 @@ function FreightPage({ mode }: { mode: FreightMode }) {
 
     const mobileQuery = window.matchMedia('(max-width: 639px)');
     let animationFrame = 0;
+    let touchStartY = 0;
     const clampTargetSelector = activeTab === 'nova'
       ? '[data-freight-national-form="true"]'
       : '[data-freight-driver-panel="true"]';
 
+    const previousHtmlOverscroll = document.documentElement.style.overscrollBehaviorY;
+    const previousBodyOverscroll = document.body.style.overscrollBehaviorY;
     const previousHtmlOverflowX = document.documentElement.style.overflowX;
     const previousBodyOverflowX = document.body.style.overflowX;
+    const previousBodyWidth = document.body.style.width;
     const pendingTimeouts = new Set<number>();
 
+    document.documentElement.style.overscrollBehaviorY = 'none';
+    document.body.style.overscrollBehaviorY = 'none';
     document.documentElement.style.overflowX = 'hidden';
     document.body.style.overflowX = 'hidden';
+    document.body.style.width = '100%';
 
     const getTargetMaxScroll = () => {
       const target = document.querySelector<HTMLElement>(clampTargetSelector);
@@ -1395,9 +1402,31 @@ function FreightPage({ mode }: { mode: FreightMode }) {
       scheduleClampSequence();
     };
 
+    const handleTouchStart = (event: TouchEvent) => {
+      touchStartY = event.touches[0]?.clientY || 0;
+    };
+
+    const handleTouchMove = (event: TouchEvent) => {
+      if (!mobileQuery.matches) return;
+
+      const currentY = event.touches[0]?.clientY || touchStartY;
+      const isScrollingDown = touchStartY - currentY > 0;
+      if (!isScrollingDown) return;
+
+      const maxScroll = getTargetMaxScroll();
+      if (maxScroll === null) return;
+
+      if (window.scrollY >= maxScroll - 1) {
+        event.preventDefault();
+        window.scrollTo({ top: maxScroll, behavior: 'auto' });
+      }
+    };
+
     scheduleClamp();
     window.addEventListener('scroll', scheduleClamp, { passive: true });
     window.addEventListener('resize', handleViewportChange);
+    window.addEventListener('touchstart', handleTouchStart, { passive: true });
+    window.addEventListener('touchmove', handleTouchMove, { passive: false });
     window.addEventListener('focusin', scheduleClampSequence, true);
     window.addEventListener('focusout', scheduleClampSequence, true);
     window.visualViewport?.addEventListener('resize', handleViewportChange);
@@ -1406,10 +1435,15 @@ function FreightPage({ mode }: { mode: FreightMode }) {
     return () => {
       if (animationFrame) window.cancelAnimationFrame(animationFrame);
       pendingTimeouts.forEach(timeoutId => window.clearTimeout(timeoutId));
+      document.documentElement.style.overscrollBehaviorY = previousHtmlOverscroll;
+      document.body.style.overscrollBehaviorY = previousBodyOverscroll;
       document.documentElement.style.overflowX = previousHtmlOverflowX;
       document.body.style.overflowX = previousBodyOverflowX;
+      document.body.style.width = previousBodyWidth;
       window.removeEventListener('scroll', scheduleClamp);
       window.removeEventListener('resize', handleViewportChange);
+      window.removeEventListener('touchstart', handleTouchStart);
+      window.removeEventListener('touchmove', handleTouchMove);
       window.removeEventListener('focusin', scheduleClampSequence, true);
       window.removeEventListener('focusout', scheduleClampSequence, true);
       window.visualViewport?.removeEventListener('resize', handleViewportChange);
@@ -2070,7 +2104,7 @@ function FreightPage({ mode }: { mode: FreightMode }) {
     : null;
 
   return (
-    <div className="w-full min-w-0 overflow-x-hidden bg-slate-50 px-3 pb-0 pt-3 sm:p-4 md:p-6">
+    <div className="overflow-x-clip bg-slate-50 px-3 pb-0 pt-3 sm:p-4 md:p-6">
       <div className="mx-auto w-full min-w-0 max-w-7xl space-y-5">
         {showPageHeader ? (
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -2121,7 +2155,7 @@ function FreightPage({ mode }: { mode: FreightMode }) {
         ) : null}
 
         {!isSingleTabView ? (
-          <div className="-mx-1 flex gap-2 overflow-x-auto border-b border-slate-200 px-1 pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <div className="-mx-1 flex gap-2 overflow-x-auto border-b border-slate-200 px-1 pb-2">
             {[
               { id: 'dashboard', label: 'Dashboard', icon: BarChart3, visible: true },
               { id: 'nova', label: 'Nova solicitação', icon: Plus, visible: !isDriver },
@@ -4205,14 +4239,14 @@ function KanbanPanel({
 
   if (isDriver) {
     return (
-      <div data-freight-driver-panel="true" className="grid min-w-0 max-w-full gap-3 overflow-visible lg:min-h-[520px] lg:grid-cols-2">
+      <div data-freight-driver-panel="true" className="grid min-w-0 max-w-full gap-3 overflow-hidden lg:min-h-[520px] lg:grid-cols-2">
         {(['Em Rota', 'Agendado'] as FreightStatus[]).map(status => {
           const rows = driverGrouped[status] || [];
           const accentClass = status === 'Agendado' ? 'border-yellow-400 bg-yellow-50/60' : 'border-blue-500 bg-blue-50/60';
           const countClass = status === 'Agendado' ? 'bg-yellow-100 text-yellow-800' : 'bg-blue-100 text-blue-800';
 
           return (
-            <section key={status} className={`flex min-w-0 flex-col overflow-visible rounded-lg border bg-white shadow-sm lg:min-h-[420px] ${accentClass}`}>
+            <section key={status} className={`flex min-w-0 flex-col overflow-hidden rounded-lg border bg-white shadow-sm lg:min-h-[420px] ${accentClass}`}>
               <div className="flex items-center justify-between border-b border-slate-100 bg-white px-4 py-3">
                 <h3 className="font-bold text-slate-950">{status}</h3>
                 <span className={`rounded-full px-2 py-1 text-xs font-bold ${countClass}`}>{rows.length}</span>
