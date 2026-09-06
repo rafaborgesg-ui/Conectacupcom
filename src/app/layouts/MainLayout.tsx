@@ -124,7 +124,7 @@ export function MainLayout() {
       <CacheBuster />
       
       <div
-        className={`${isFreightNationalRoute ? 'min-h-0 lg:min-h-screen' : 'min-h-screen'} flex w-full min-w-0 overflow-x-hidden bg-gray-50 tap-highlight-none`}
+        className={`${isFreightNationalRoute ? 'min-h-0 lg:min-h-screen' : 'min-h-screen'} bg-gray-50 flex tap-highlight-none`}
         style={layoutStyle}
       >
         {/* Componente de Prevenção de Zoom */}
@@ -151,7 +151,7 @@ export function MainLayout() {
         <main 
           id="main-content" 
           tabIndex={-1}
-          className={`min-w-0 flex-1 overflow-x-hidden ${desktopMainOffsetClass} ${isFreightNationalRoute ? 'min-h-0 pb-0 lg:min-h-screen' : 'min-h-screen pb-16 lg:pb-0'} no-overscroll focus:outline-none collector-adapt-main`}
+          className={`flex-1 ${desktopMainOffsetClass} ${isFreightNationalRoute ? 'min-h-0 pb-0 lg:min-h-screen' : 'min-h-screen pb-16 lg:pb-0'} no-overscroll focus:outline-none collector-adapt-main`}
         >
           {/* 🚀 SUSPENSE - Envolve todos os componentes lazy loaded */}
           <Suspense fallback={<PageLoadingFallback />}>
