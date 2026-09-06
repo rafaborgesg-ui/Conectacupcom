@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import * as XLSX from 'xlsx';
 import {
   AlertTriangle,
@@ -1337,6 +1338,119 @@ function FreightPage({ mode }: { mode: FreightMode }) {
     return () => window.clearInterval(intervalId);
   }, [freightType, isInternational]);
 
+  useEffect(() => {
+    if (isInternational || selected || editingRequest || !['nova', 'motorista'].includes(activeTab)) return;
+
+    const mobileQuery = window.matchMedia('(max-width: 639px)');
+    let animationFrame = 0;
+    let touchStartY = 0;
+    const clampTargetSelector = activeTab === 'nova'
+      ? '[data-freight-national-form="true"]'
+      : '[data-freight-driver-panel="true"]';
+
+    const previousHtmlOverscroll = document.documentElement.style.overscrollBehaviorY;
+    const previousBodyOverscroll = document.body.style.overscrollBehaviorY;
+    const previousHtmlOverflowX = document.documentElement.style.overflowX;
+    const previousBodyOverflowX = document.body.style.overflowX;
+    const previousBodyWidth = document.body.style.width;
+    const pendingTimeouts = new Set<number>();
+
+    document.documentElement.style.overscrollBehaviorY = 'none';
+    document.body.style.overscrollBehaviorY = 'none';
+    document.documentElement.style.overflowX = 'clip';
+    document.body.style.overflowX = 'clip';
+    document.body.style.width = '100%';
+
+    const getTargetMaxScroll = () => {
+      const target = document.querySelector<HTMLElement>(clampTargetSelector);
+      if (!target) return null;
+
+      const viewportHeight = window.visualViewport?.height || window.innerHeight;
+      const targetBottom = target.getBoundingClientRect().bottom + window.scrollY;
+      return Math.max(0, Math.ceil(targetBottom - viewportHeight));
+    };
+
+    const clampScrollToTarget = () => {
+      animationFrame = 0;
+      if (!mobileQuery.matches) return;
+
+      const maxScroll = getTargetMaxScroll();
+      if (maxScroll === null) return;
+
+      if (window.scrollY > maxScroll + 2) {
+        window.scrollTo({ top: maxScroll, behavior: 'auto' });
+      }
+    };
+
+    const scheduleClamp = () => {
+      if (animationFrame) return;
+      animationFrame = window.requestAnimationFrame(clampScrollToTarget);
+    };
+
+    const scheduleClampSequence = () => {
+      scheduleClamp();
+      [80, 180, 360, 700, 1200].forEach(delay => {
+        const timeoutId = window.setTimeout(() => {
+          pendingTimeouts.delete(timeoutId);
+          scheduleClamp();
+        }, delay);
+        pendingTimeouts.add(timeoutId);
+      });
+    };
+
+    const handleViewportChange = () => {
+      scheduleClampSequence();
+    };
+
+    const handleTouchStart = (event: TouchEvent) => {
+      touchStartY = event.touches[0]?.clientY || 0;
+    };
+
+    const handleTouchMove = (event: TouchEvent) => {
+      if (!mobileQuery.matches) return;
+
+      const currentY = event.touches[0]?.clientY || touchStartY;
+      const isScrollingDown = touchStartY - currentY > 0;
+      if (!isScrollingDown) return;
+
+      const maxScroll = getTargetMaxScroll();
+      if (maxScroll === null) return;
+
+      if (window.scrollY >= maxScroll - 1) {
+        event.preventDefault();
+        window.scrollTo({ top: maxScroll, behavior: 'auto' });
+      }
+    };
+
+    scheduleClamp();
+    window.addEventListener('scroll', scheduleClamp, { passive: true });
+    window.addEventListener('resize', handleViewportChange);
+    window.addEventListener('touchstart', handleTouchStart, { passive: true });
+    window.addEventListener('touchmove', handleTouchMove, { passive: false });
+    window.addEventListener('focusin', scheduleClampSequence, true);
+    window.addEventListener('focusout', scheduleClampSequence, true);
+    window.visualViewport?.addEventListener('resize', handleViewportChange);
+    window.visualViewport?.addEventListener('scroll', handleViewportChange);
+
+    return () => {
+      if (animationFrame) window.cancelAnimationFrame(animationFrame);
+      pendingTimeouts.forEach(timeoutId => window.clearTimeout(timeoutId));
+      document.documentElement.style.overscrollBehaviorY = previousHtmlOverscroll;
+      document.body.style.overscrollBehaviorY = previousBodyOverscroll;
+      document.documentElement.style.overflowX = previousHtmlOverflowX;
+      document.body.style.overflowX = previousBodyOverflowX;
+      document.body.style.width = previousBodyWidth;
+      window.removeEventListener('scroll', scheduleClamp);
+      window.removeEventListener('resize', handleViewportChange);
+      window.removeEventListener('touchstart', handleTouchStart);
+      window.removeEventListener('touchmove', handleTouchMove);
+      window.removeEventListener('focusin', scheduleClampSequence, true);
+      window.removeEventListener('focusout', scheduleClampSequence, true);
+      window.visualViewport?.removeEventListener('resize', handleViewportChange);
+      window.visualViewport?.removeEventListener('scroll', handleViewportChange);
+    };
+  }, [activeTab, editingRequest, isInternational, selected]);
+
   async function loadData(options: { silent?: boolean } = {}) {
     if (!options.silent) {
       setLoading(true);
@@ -1990,7 +2104,7 @@ function FreightPage({ mode }: { mode: FreightMode }) {
     : null;
 
   return (
-    <div className="bg-slate-50 p-3 sm:p-4 md:p-6">
+    <div className="overflow-x-clip bg-slate-50 px-3 pb-0 pt-3 sm:p-4 md:p-6">
       <div className="mx-auto w-full min-w-0 max-w-7xl space-y-5">
         {showPageHeader ? (
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -3430,33 +3544,46 @@ function RecurringAddressField({
       </button>
     </>
   );
+  const mobileMenu = open && typeof document !== 'undefined'
+    ? createPortal(
+      <>
+        <button
+          className="fixed inset-0 z-[9998] bg-transparent sm:hidden"
+          type="button"
+          aria-label="Fechar endereços"
+          onClick={onClose}
+        />
+        <div className="fixed left-4 right-4 top-1/2 z-[9999] max-h-[70dvh] -translate-y-1/2 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 text-sm shadow-2xl sm:hidden">
+          {renderMenuContent()}
+        </div>
+      </>,
+      document.body
+    )
+    : null;
+
   const addrIsReq = label.endsWith(' *');
   const addrLabelText = addrIsReq ? label.slice(0, -2) : label;
   return (
     <div className="block min-w-0">
       <span className={labelClass()}>{addrLabelText}{addrIsReq && <span className="text-red-500"> *</span>}</span>
-      <div className="relative min-w-0 max-w-full">
-        <div className="flex min-w-0 max-w-full items-stretch overflow-hidden rounded-md border border-slate-200 bg-white transition focus-within:border-red-500 focus-within:ring-2 focus-within:ring-red-100">
-          <input
-            className="box-border block h-12 min-w-0 flex-1 border-0 bg-transparent px-3 text-sm text-slate-900 outline-none placeholder:text-slate-400 sm:h-10"
-            value={value}
-            onChange={event => onChange(event.target.value)}
-          />
-          <button
-            className="m-1 inline-flex h-10 shrink-0 items-center justify-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-3 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-white sm:h-8"
-            type="button"
-            onClick={onToggle}
-            aria-expanded={open}
-          >
-            <MapPin className="h-3.5 w-3.5 text-pink-500" />
-            Endereços
-          </button>
-        </div>
+      <div className="relative min-w-0">
+        <button
+          className="absolute right-1 top-1/2 z-10 inline-flex h-10 -translate-y-1/2 items-center justify-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-3 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-white sm:h-8"
+          type="button"
+          onClick={onToggle}
+        >
+          <MapPin className="h-3.5 w-3.5 text-pink-500" />
+          Endereços
+        </button>
         {open ? (
-          <div className="absolute left-0 right-0 top-full z-30 mt-1 max-w-full overflow-hidden rounded-md border border-slate-200 bg-white py-1 text-sm shadow-lg sm:left-auto sm:right-0 sm:w-64">
-            {renderMenuContent()}
-          </div>
+          <>
+            {mobileMenu}
+            <div className="absolute right-0 top-full z-30 mt-1 hidden w-64 overflow-hidden rounded-md border border-slate-200 bg-white py-1 text-sm shadow-lg sm:block">
+              {renderMenuContent()}
+            </div>
+          </>
         ) : null}
+        <input className={`${fieldClass()} pr-32`} value={value} onChange={event => onChange(event.target.value)} />
       </div>
     </div>
   );
