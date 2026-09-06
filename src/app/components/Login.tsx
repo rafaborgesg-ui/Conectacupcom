@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router';
 import { Eye, EyeOff, Mail, Lock, LogIn, Loader2, ArrowLeft, CheckCircle2, AlertCircle } from 'lucide-react';
 import { createClient } from '../utils/supabase/client';
@@ -36,6 +36,8 @@ export function Login({ onLogin, onSignUp }: LoginProps) {
   const [passwordValidation, setPasswordValidation] = useState<ValidationState>({ isValid: false, message: '' });
   const [touched, setTouched] = useState({ email: false, password: false });
   const [isMobile, setIsMobile] = useState(window.innerWidth < 640);
+  const loginFormRef = useRef<HTMLFormElement>(null);
+  const submitButtonRef = useRef<HTMLButtonElement>(null);
 
   // Detecta mudanças no tamanho da tela
   useEffect(() => {
@@ -72,6 +74,38 @@ export function Login({ onLogin, onSignUp }: LoginProps) {
       setPasswordValidation({ isValid: true, message: 'Senha válida' });
     }
   }, [password, touched.password]);
+
+  useEffect(() => {
+    if (showSplash || currentView !== 'login') return;
+
+    const handleEnterKey = (event: KeyboardEvent) => {
+      if (
+        event.key !== 'Enter' ||
+        event.defaultPrevented ||
+        event.isComposing ||
+        event.shiftKey ||
+        event.ctrlKey ||
+        event.altKey ||
+        event.metaKey
+      ) {
+        return;
+      }
+
+      const target = event.target as HTMLElement | null;
+      if (target?.tagName === 'TEXTAREA') return;
+      if (loginFormRef.current && target && !loginFormRef.current.contains(target)) return;
+
+      event.preventDefault();
+      if (submitButtonRef.current) {
+        submitButtonRef.current.click();
+      } else {
+        loginFormRef.current?.requestSubmit();
+      }
+    };
+
+    window.addEventListener('keydown', handleEnterKey);
+    return () => window.removeEventListener('keydown', handleEnterKey);
+  }, [currentView, showSplash]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -291,7 +325,7 @@ export function Login({ onLogin, onSignUp }: LoginProps) {
       <div className="w-full max-w-[360px] px-4 sm:max-w-xs sm:px-0 relative z-10 mt-56">
         {/* Login Card */}
         <div className="space-y-3">
-          <form onSubmit={handleSubmit} className="space-y-2">
+          <form ref={loginFormRef} onSubmit={handleSubmit} className="space-y-2">
             {/* Email */}
             <div className="space-y-1">
               <Label htmlFor="email" className="text-white text-xs">
@@ -380,6 +414,7 @@ export function Login({ onLogin, onSignUp }: LoginProps) {
 
             {/* Submit Button */}
             <Button
+              ref={submitButtonRef}
               type="submit"
               disabled={isLoading || (touched.email && !emailValidation.isValid) || (touched.password && !passwordValidation.isValid)}
               className="w-full bg-gradient-to-r from-[#D50000] to-[#B00000] hover:from-[#B00000] hover:to-[#8B0000] text-white font-semibold py-3 rounded-lg shadow-md shadow-red-900/30 transition-all duration-200 hover:shadow-lg hover:shadow-red-900/50 hover:scale-[1.02] disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 text-xs"
