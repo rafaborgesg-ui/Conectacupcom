@@ -939,20 +939,42 @@ function itemToRow(requestId: string, item: FreightItem) {
   };
 }
 
+// Keep PostgREST URLs short for users who can view the full freight history.
+const FREIGHT_RELATED_QUERY_BATCH_SIZE = 50;
+
+type FreightRelatedTable = 'freight_request_volumes' | 'freight_request_items' | 'freight_attachments';
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
+async function selectFreightRelatedRows(table: FreightRelatedTable, ids: string[]) {
+  const records: any[] = [];
+  for (const batch of chunkArray(ids, FREIGHT_RELATED_QUERY_BATCH_SIZE)) {
+    const { data, error } = await supabase
+      .from(table)
+      .select('*')
+      .in('freight_request_id', batch);
+
+    if (error) throw error;
+    records.push(...(data || []));
+  }
+  return records;
+}
+
 async function hydrateFreightRows(rows: any[]): Promise<FreightRequest[]> {
   const ids = rows.map(row => row.id).filter(Boolean);
   if (!ids.length) return rows.map(mapRequest);
 
-  const [volumesResult, itemsResult, attachmentsResult] = await Promise.all([
-    supabase.from('freight_request_volumes').select('*').in('freight_request_id', ids),
-    supabase.from('freight_request_items').select('*').in('freight_request_id', ids),
-    supabase.from('freight_attachments').select('*').in('freight_request_id', ids)
+  const [volumesRecords, itemsRecords, attachmentsRecords] = await Promise.all([
+    selectFreightRelatedRows('freight_request_volumes', ids),
+    selectFreightRelatedRows('freight_request_items', ids),
+    selectFreightRelatedRows('freight_attachments', ids)
   ]);
-
-  if (volumesResult.error || itemsResult.error || attachmentsResult.error) {
-    const relationshipError = volumesResult.error || itemsResult.error || attachmentsResult.error;
-    throw relationshipError;
-  }
 
   const groupByRequest = (records: any[] = []) =>
     records.reduce((acc: Record<string, any[]>, record) => {
@@ -962,9 +984,9 @@ async function hydrateFreightRows(rows: any[]): Promise<FreightRequest[]> {
       return acc;
     }, {});
 
-  const volumes = groupByRequest(volumesResult.data || []);
-  const items = groupByRequest(itemsResult.data || []);
-  const attachments = groupByRequest(attachmentsResult.data || []);
+  const volumes = groupByRequest(volumesRecords);
+  const items = groupByRequest(itemsRecords);
+  const attachments = groupByRequest(attachmentsRecords);
 
   return rows.map(row => mapRequest({
     ...row,
