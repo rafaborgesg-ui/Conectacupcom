@@ -116,6 +116,13 @@ export const MENU_STRUCTURE: MenuItem[] = [
     isMain: true,
     description: 'Gestão de pneus',
     subItems: [
+     {
+        id: 'kanban-pnr',
+        label: 'Kanban',
+        icon: LayoutDashboard,
+        externalUrl: 'https://kanbanpnr.netlify.app/',
+        description: 'Kanban externo PNR'
+      },
       {
         id: 'demanda',
         label: 'Demanda',
@@ -611,6 +618,7 @@ export const MENU_TO_PAGE_MAP: Record<string, string> = {
   'conferencia-serial': 'CONFERENCIA_SERIAL',
   'shakedown': 'SHAKEDOWN',
   'demanda': 'DEMANDA',
+  'kanban-pnr': 'KANBAN_PNR',
   'pedidos-pneus': 'PEDIDOS_PNEUS',
   'rfid-pitlane': 'RFID_PITLANE',
   'rodas': 'RODAS',

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import * as XLSX from 'xlsx';
 import {
@@ -7,6 +7,9 @@ import {
   CalendarClock,
   Camera,
   CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Clock3,
   ClipboardList,
   Columns3,
@@ -15,6 +18,7 @@ import {
   FileSpreadsheet,
   Globe2,
   Info,
+  Lock,
   MapPin,
   Package,
   Pencil,
@@ -52,6 +56,8 @@ import {
   type FreightVolume
 } from '../utils/freightStorage';
 import { usePermissions } from '../utils/usePermissions';
+import { getChassis, type Chassis } from '../utils/chassisStorage';
+import { createClient } from '../utils/supabase/client';
 
 type FreightMode = 'nacional' | 'motorista' | 'internacional';
 type TabKey = 'dashboard' | 'nova' | 'atendimento' | 'kanban' | 'motorista' | 'relatorios';
@@ -113,6 +119,30 @@ const emptyNationalForm = {
   enderecoEntrega: '',
   observacoes: ''
 };
+
+type BatchItem = {
+  id: string;
+  itemDescricao: string;
+  overrideOpen: boolean;
+  prazoEntrega: string;
+  enderecoRetirada: string;
+  enderecoEntrega: string;
+  responsavelLocal: string;
+  observacoes: string;
+};
+
+function emptyBatchItem(): BatchItem {
+  return {
+    id: Math.random().toString(36).slice(2),
+    itemDescricao: '',
+    overrideOpen: false,
+    prazoEntrega: '',
+    enderecoRetirada: '',
+    enderecoEntrega: '',
+    responsavelLocal: '',
+    observacoes: '',
+  };
+}
 
 const emptyNationalEditForm = {
   ...emptyNationalForm,
@@ -1288,12 +1318,17 @@ function FreightPage({ mode }: { mode: FreightMode }) {
     setKanbanFiltersOpen(false);
   }, [activeTab]);
 
+  const activeTabRef = useRef<TabKey>(activeTab);
   useEffect(() => {
-    if (activeTab !== 'kanban' || isInternational) return;
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (isInternational) return;
 
     let refreshing = false;
     const intervalId = window.setInterval(() => {
-      if (refreshing) return;
+      if (refreshing || activeTabRef.current !== 'kanban') return;
       refreshing = true;
       loadData({ silent: true }).finally(() => {
         refreshing = false;
@@ -1301,7 +1336,7 @@ function FreightPage({ mode }: { mode: FreightMode }) {
     }, 60000);
 
     return () => window.clearInterval(intervalId);
-  }, [activeTab, freightType, isInternational]);
+  }, [freightType, isInternational]);
 
   useEffect(() => {
     if (isInternational || selected || editingRequest || !['nova', 'motorista'].includes(activeTab)) return;
@@ -1716,6 +1751,57 @@ function FreightPage({ mode }: { mode: FreightMode }) {
     }
   }
 
+  async function handleBatchCreateNational(items: (typeof emptyNationalForm)[]) {
+    setMessage(null);
+    const requesterSla = requesterSlaDays(lookups);
+    const minimumDl = requesterMinimumDeadline(requesterSla);
+
+    for (const item of items) {
+      const requested = new Date(item.prazoEntrega);
+      if (!item.prazoEntrega || Number.isNaN(requested.getTime()) || requested.getTime() < minimumDl.getTime()) {
+        setMessage({
+          type: 'error',
+          text: `Um ou mais fretes tem prazo inválido. O mínimo é ${formatSlaDaysLabel(requesterSla)} de antecedência.`
+        });
+        return;
+      }
+    }
+
+    setSaving(true);
+    try {
+      const created = await Promise.all(items.map(item => createFreightRequest({
+        freightType: 'nacional',
+        status: 'Solicitado',
+        ...item,
+        setorId: item.setorId || undefined,
+        projetoId: item.projetoId || undefined,
+        responsavelEntrega: undefined,
+        pagamento: undefined,
+        fotosProdutoUrls: [],
+        fotoEntregaUrls: [],
+        payloadOriginal: { ...item, responsavelEntrega: undefined, pagamento: undefined }
+      })));
+
+      if (productFiles.length) {
+        await Promise.all(created.map(c => uploadFreightFiles(c.id, productFiles, 'produto')));
+      }
+      await Promise.all(created.map(c => sendFreightNotification(c.id, 'created')));
+
+      setNationalForm(emptyNationalForm);
+      setProductFiles([]);
+      setTab(forcedTab || 'dashboard');
+      setSuccessDialog({
+        title: `${created.length} solicitaç${created.length === 1 ? 'ão' : 'ões'} cadastrada${created.length === 1 ? '' : 's'} com sucesso`,
+        text: 'Você receberá cópias por e-mail com os dados de cada solicitação.'
+      });
+      await loadData({ silent: true });
+    } catch (error: any) {
+      setMessage({ type: 'error', text: error.message || 'Erro ao cadastrar solicitações.' });
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function handleCreateInternational(event: React.FormEvent) {
     event.preventDefault();
     setSaving(true);
@@ -1991,6 +2077,23 @@ function FreightPage({ mode }: { mode: FreightMode }) {
       : { title: 'Frete Nacional', subtitle: '', icon: Truck };
   const HeaderIcon = header.icon;
   const showPageHeader = !isSingleTabView && (isInternational || activeTab === 'dashboard');
+  const currentUserData = useMemo(() => {
+    try {
+      const raw = localStorage.getItem('porsche-cup-user');
+      if (!raw) return null;
+      const user = JSON.parse(raw);
+      return { name: String(user.name || profile?.name || ''), email: String(user.email || '') };
+    } catch {
+      return null;
+    }
+  }, [profile]);
+
+  useEffect(() => {
+    if (currentUserData?.name && !nationalForm.solicitanteNome) {
+      setNationalForm(current => ({ ...current, solicitanteNome: currentUserData.name }));
+    }
+  }, [currentUserData]);
+
   const nationalRequesterSlaDays = requesterSlaDays(lookups);
   const nationalMinimumDeadlineInput = toDateTimeLocalInput(requesterMinimumDeadline(nationalRequesterSlaDays).toISOString());
   const nationalDeadlineMessage = activeTab === 'nova'
@@ -2001,7 +2104,7 @@ function FreightPage({ mode }: { mode: FreightMode }) {
     : null;
 
   return (
-    <div className="overflow-x-hidden bg-slate-50 px-3 pb-0 pt-3 sm:min-h-screen sm:p-4 md:p-6">
+    <div className="overflow-x-clip bg-slate-50 px-3 pb-0 pt-3 sm:p-4 md:p-6">
       <div className="mx-auto w-full min-w-0 max-w-7xl space-y-5">
         {showPageHeader ? (
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -2139,9 +2242,12 @@ function FreightPage({ mode }: { mode: FreightMode }) {
                 requesterSlaDays={nationalRequesterSlaDays}
                 minimumDeadline={nationalMinimumDeadlineInput}
                 deadlineMessage={nationalDeadlineMessage}
+                currentUser={currentUserData || undefined}
                 onChange={updateNationalField}
                 onFiles={files => setProductFiles(files)}
                 onSubmit={handleCreateNational}
+                onBatchSubmit={handleBatchCreateNational}
+                onCancel={isSingleTabView ? undefined : () => setTab('dashboard')}
               />
             )}
 
@@ -2714,6 +2820,178 @@ function RequestsTable({
   );
 }
 
+function BatchItemCard({
+  item,
+  index,
+  lookups,
+  chassisCategories,
+  containersList,
+  minimumDeadline,
+  requesterSlaDays: slaDays,
+  onChange,
+  onRemove,
+  canRemove,
+}: {
+  item: BatchItem;
+  index: number;
+  lookups: any;
+  chassisCategories: Map<string, Chassis[]>;
+  containersList: { id: string; name: string }[];
+  minimumDeadline: string;
+  requesterSlaDays: number;
+  onChange: (updates: Partial<BatchItem>) => void;
+  onRemove: () => void;
+  canRemove: boolean;
+}) {
+  const [selectedChassisCat, setSelectedChassisCat] = useState<string | null>(null);
+  const [containerMenuOpen, setContainerMenuOpen] = useState(false);
+  const [openAddressMenu, setOpenAddressMenu] = useState<string | null>(null);
+
+  const appendDescription = (text: string) => {
+    const current = item.itemDescricao.trim();
+    onChange({ itemDescricao: current ? `${current}\n${text}` : text });
+    setSelectedChassisCat(null);
+  };
+
+  const hasChips = chassisCategories.size > 0 || containersList.length > 0;
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white">
+      <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+        <span className="text-sm font-semibold text-slate-800">Frete #{index + 1}</span>
+        {canRemove && (
+          <button type="button" onClick={onRemove} className="rounded p-1 text-slate-400 hover:text-red-500">
+            <X className="h-4 w-4" />
+          </button>
+        )}
+      </div>
+      <div className="space-y-3 p-4">
+        {hasChips && (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] text-slate-400">Inserir rápido:</span>
+            {Array.from(chassisCategories.keys()).map(gen => (
+              <div key={gen} className="relative">
+                <button
+                  type="button"
+                  className={`inline-flex items-center rounded border px-2.5 py-1 text-xs transition ${selectedChassisCat === gen ? 'border-slate-400 bg-slate-100 text-slate-800' : 'border-slate-200 bg-white text-slate-600 hover:border-slate-400 hover:text-slate-800'}`}
+                  onClick={() => setSelectedChassisCat(c => c === gen ? null : gen)}
+                >
+                  + Carro {gen}
+                </button>
+                {selectedChassisCat === gen && (
+                  <div className="absolute left-0 top-full z-20 mt-1 max-h-48 min-w-36 overflow-y-auto rounded-md border border-slate-200 bg-white py-1 shadow-lg">
+                    <p className="border-b border-slate-100 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">Carro {gen}</p>
+                    {(chassisCategories.get(gen) || []).map(c => (
+                      <button key={c.id} type="button" className="block w-full px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
+                        onClick={() => appendDescription(`1x Carro ${gen} #${c.codigo}`)}>
+                        {c.codigo}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+            {containersList.length > 0 && (
+              <div className="relative">
+                <button type="button"
+                  className={`inline-flex items-center rounded border px-2.5 py-1 text-xs transition ${containerMenuOpen ? 'border-slate-400 bg-slate-100 text-slate-800' : 'border-slate-200 bg-white text-slate-600 hover:border-slate-400 hover:text-slate-800'}`}
+                  onClick={() => { setContainerMenuOpen(o => !o); setSelectedChassisCat(null); }}>
+                  + Container
+                </button>
+                {containerMenuOpen && (
+                  <div className="absolute left-0 top-full z-20 mt-1 max-h-48 min-w-44 overflow-y-auto rounded-md border border-slate-200 bg-white py-1 shadow-lg">
+                    <p className="border-b border-slate-100 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">Selecione o Container</p>
+                    {containersList.map(c => (
+                      <button key={c.id} type="button" className="block w-full px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
+                        onClick={() => { appendDescription(`1x CNTR (${c.name})`); setContainerMenuOpen(false); }}>
+                        {c.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+        <div>
+          <label className={labelClass()}>Discriminação dos itens<span className="text-red-500"> *</span></label>
+          <textarea
+            className={`${areaClass()} min-h-[100px]`}
+            value={item.itemDescricao}
+            onChange={e => onChange({ itemDescricao: e.target.value })}
+            placeholder={'Ex:\n1x Parachoque traseiro\n2x Molde de alumínio'}
+            required
+          />
+        </div>
+        <button
+          type="button"
+          className="flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-slate-700"
+          onClick={() => onChange({ overrideOpen: !item.overrideOpen })}
+        >
+          <ChevronDown className={`h-3.5 w-3.5 transition-transform ${item.overrideOpen ? 'rotate-180' : ''}`} />
+          {item.overrideOpen ? 'Ocultar campos específicos' : 'Personalizar campos para este frete'}
+        </button>
+        {item.overrideOpen && (
+          <div className="space-y-3 border-t border-slate-100 pt-3">
+            <p className="text-[11px] text-slate-400">Deixe em branco para usar o valor padrão acima. Os campos abaixo substituem o padrão apenas neste frete.</p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label className={labelClass()}>Prazo específico</label>
+                <input
+                  className={fieldClass()}
+                  type="datetime-local"
+                  min={minimumDeadline}
+                  step={60}
+                  value={item.prazoEntrega}
+                  onChange={e => onChange({ prazoEntrega: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className={labelClass()}>Responsável local específico</label>
+                <input
+                  className={fieldClass()}
+                  value={item.responsavelLocal}
+                  onChange={e => onChange({ responsavelLocal: e.target.value })}
+                  placeholder="Substitui o responsável padrão"
+                />
+              </div>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <RecurringAddressField
+                label="Retirada específica"
+                value={item.enderecoRetirada}
+                options={lookups.enderecos}
+                open={openAddressMenu === 'retirada'}
+                onToggle={() => setOpenAddressMenu(c => c === 'retirada' ? null : 'retirada')}
+                onClose={() => setOpenAddressMenu(null)}
+                onChange={v => onChange({ enderecoRetirada: v })}
+              />
+              <RecurringAddressField
+                label="Entrega específica"
+                value={item.enderecoEntrega}
+                options={lookups.enderecos}
+                open={openAddressMenu === 'entrega'}
+                onToggle={() => setOpenAddressMenu(c => c === 'entrega' ? null : 'entrega')}
+                onClose={() => setOpenAddressMenu(null)}
+                onChange={v => onChange({ enderecoEntrega: v })}
+              />
+            </div>
+            <div>
+              <label className={labelClass()}>Observações específicas</label>
+              <textarea
+                className={areaClass()}
+                value={item.observacoes}
+                onChange={e => onChange({ observacoes: e.target.value })}
+                placeholder="Observações exclusivas para este frete"
+              />
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function NationalForm({
   form,
   files,
@@ -2722,9 +3000,12 @@ function NationalForm({
   requesterSlaDays,
   minimumDeadline,
   deadlineMessage,
+  currentUser,
   onChange,
   onFiles,
-  onSubmit
+  onSubmit,
+  onBatchSubmit,
+  onCancel
 }: {
   form: typeof emptyNationalForm;
   files: File[];
@@ -2733,12 +3014,31 @@ function NationalForm({
   requesterSlaDays: number;
   minimumDeadline: string;
   deadlineMessage?: string | null;
+  currentUser?: { name: string; email: string };
   onChange: (field: keyof typeof emptyNationalForm, value: string) => void;
   onFiles: (files: File[]) => void;
   onSubmit: (event: FormEvent) => void;
+  onBatchSubmit?: (items: (typeof emptyNationalForm)[]) => Promise<void>;
+  onCancel?: () => void;
 }) {
+  const [freightMode, setFreightMode] = useState<'single' | 'batch'>('single');
+  const [batchItems, setBatchItems] = useState<BatchItem[]>([emptyBatchItem()]);
   const [openAddressMenu, setOpenAddressMenu] = useState<'retirada' | 'entrega' | null>(null);
   const [filePreviews, setFilePreviews] = useState<Array<{ name: string; url: string }>>([]);
+  const [chassisData, setChassisData] = useState<Chassis[]>([]);
+  const [containersList, setContainersList] = useState<Array<{ id: string; name: string }>>([]);
+  const [selectedChassisCat, setSelectedChassisCat] = useState<string | null>(null);
+  const [containerMenuOpen, setContainerMenuOpen] = useState<boolean>(false);
+  const [nameLocked, setNameLocked] = useState<boolean>(true);
+
+  useEffect(() => {
+    getChassis().then(setChassisData).catch(() => {});
+    createClient()
+      .from('containers')
+      .select('id, name')
+      .order('name')
+      .then(({ data }) => { if (data) setContainersList(data as Array<{ id: string; name: string }>); });
+  }, []);
 
   useEffect(() => {
     const previews = files.map(file => ({ name: file.name, url: URL.createObjectURL(file) }));
@@ -2747,130 +3047,447 @@ function NationalForm({
   }, [files]);
 
   const removeFile = (index: number) => {
-    onFiles(files.filter((_, currentIndex) => currentIndex !== index));
+    onFiles(files.filter((_, i) => i !== index));
+  };
+
+  const chassisCategories = useMemo(() => {
+    const map = new Map<string, Chassis[]>();
+    chassisData.forEach(c => {
+      const gen = c.geracao || 'Outros';
+      if (!map.has(gen)) map.set(gen, []);
+      map.get(gen)!.push(c);
+    });
+    return map;
+  }, [chassisData]);
+
+  const progressFields = [form.projeto, form.setor, form.prazoEntrega, form.enderecoRetirada, form.enderecoEntrega, form.itemDescricao, form.responsavelLocal];
+  const filledCount = progressFields.filter(Boolean).length;
+  const progressPct = Math.round((filledCount / progressFields.length) * 100);
+
+  const appendDescription = (text: string) => {
+    const current = form.itemDescricao.trim();
+    onChange('itemDescricao', current ? `${current}\n${text}` : text);
+    setSelectedChassisCat(null);
   };
 
   return (
-    <form
-      data-freight-national-form="true"
-      className="w-full max-w-full rounded-lg border border-slate-200 bg-white shadow-sm"
-      onSubmit={onSubmit}
-    >
-      <div className="border-b border-slate-100 px-4 py-4 pl-20 sm:px-5 sm:pl-5">
-        <h2 className="break-words text-base font-bold leading-snug text-slate-950 sm:text-lg">Cadastrar solicitação de frete nacional</h2>
-        {deadlineMessage ? (
-          <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold leading-5 text-red-700">
-            {deadlineMessage}
+    <>
+      {/* Page header */}
+      <div className="mb-4">
+        <nav className="mb-2 flex items-center gap-1 text-xs text-slate-400">
+          <span>Fretes</span>
+          <ChevronRight className="h-3 w-3" />
+          <span>Frete Nacional</span>
+          <ChevronRight className="h-3 w-3" />
+          <span className="font-medium text-slate-600">Cadastrar Solicitação</span>
+        </nav>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex items-center gap-2">
+            {onCancel ? (
+              <button
+                type="button"
+                onClick={onCancel}
+                className="flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </button>
+            ) : null}
+            <h1 className="text-lg font-bold text-slate-950 sm:text-xl">Cadastrar solicitação de frete nacional</h1>
           </div>
-        ) : null}
+          <div className="hidden items-center gap-3 sm:flex">
+            <span className="text-xs text-slate-500">Progresso da solicitação</span>
+            <div className="h-1.5 w-28 overflow-hidden rounded-full bg-slate-200">
+              <div className="h-full rounded-full bg-red-500 transition-all duration-300" style={{ width: `${progressPct}%` }} />
+            </div>
+            <span className="text-xs font-bold text-red-600">{progressPct}%</span>
+          </div>
+        </div>
+        <div className="mt-3 flex items-center gap-2">
+          <button
+            type="button"
+            className={`inline-flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-semibold transition ${freightMode === 'single' ? 'bg-slate-950 text-white' : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'}`}
+            onClick={() => setFreightMode('single')}
+          >
+            {freightMode === 'single' && <span className="h-1.5 w-1.5 rounded-full bg-red-500" />}
+            Frete único
+          </button>
+          <button
+            type="button"
+            className={`inline-flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-semibold transition ${freightMode === 'batch' ? 'bg-slate-950 text-white' : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'}`}
+            onClick={() => setFreightMode('batch')}
+          >
+            {freightMode === 'batch' && <span className="h-1.5 w-1.5 rounded-full bg-red-500" />}
+            Vários fretes
+          </button>
+        </div>
       </div>
-      <div className="grid min-w-0 gap-4 p-4 sm:p-5 md:grid-cols-2 xl:grid-cols-3">
-        <Field label="Setor">
-          <select className={fieldClass()} value={form.setor} onChange={event => onChange('setor', event.target.value)} required>
-            <option value="">Selecione...</option>
-            <SelectOptionList options={lookups.setores} />
-          </select>
-        </Field>
-        <Field label="Prazo de entrega">
-          <input className={fieldClass()} type="datetime-local" min={minimumDeadline} step={60} value={form.prazoEntrega} onChange={event => onChange('prazoEntrega', event.target.value)} required />
-          <p className="mt-1 text-xs font-medium leading-5 text-slate-500">Prazo mínimo: {formatSlaDaysLabel(requesterSlaDays)}.</p>
-        </Field>
-        <Field label="Projeto">
-          <select className={fieldClass()} value={form.projeto} onChange={event => onChange('projeto', event.target.value)} required>
-            <option value="">Selecione...</option>
-            <SelectOptionList options={lookups.projetos} />
-          </select>
-        </Field>
-        <Field label="Responsável pela solicitação">
-          <input className={fieldClass()} value={form.solicitanteNome} onChange={event => onChange('solicitanteNome', event.target.value)} required />
-        </Field>
-        <Field label="Responsável no local da retirada">
-          <input className={fieldClass()} value={form.responsavelLocal} onChange={event => onChange('responsavelLocal', event.target.value)} />
-        </Field>
-        <RecurringAddressField
-          label="Endereço de retirada"
-          value={form.enderecoRetirada}
-          options={lookups.enderecos}
-          open={openAddressMenu === 'retirada'}
-          onToggle={() => setOpenAddressMenu(current => current === 'retirada' ? null : 'retirada')}
-          onClose={() => setOpenAddressMenu(null)}
-          onChange={value => onChange('enderecoRetirada', value)}
-        />
-        <RecurringAddressField
-          label="Endereço de entrega"
-          value={form.enderecoEntrega}
-          options={lookups.enderecos}
-          open={openAddressMenu === 'entrega'}
-          onToggle={() => setOpenAddressMenu(current => current === 'entrega' ? null : 'entrega')}
-          onClose={() => setOpenAddressMenu(null)}
-          onChange={value => onChange('enderecoEntrega', value)}
-        />
-        <div className="md:col-span-2 xl:col-span-3">
-          <Field label="Descreva as quantidades e itens a serem transportados">
-            <textarea className={`${areaClass()} min-h-28 text-[12px] leading-4 placeholder:text-[12px] sm:text-sm sm:leading-5 sm:placeholder:text-sm`} value={form.itemDescricao} onChange={event => onChange('itemDescricao', event.target.value)} placeholder={'Exemplo:\n1x Parachoque traseiro\n2x Molde de alumínio'} required />
-          </Field>
+
+    <form data-freight-national-form="true" className="w-full space-y-4" onSubmit={onSubmit}>
+
+      {/* Single unified card */}
+      <div className="rounded-lg border border-slate-200 bg-white">
+
+        {/* 1. Dados Gerais */}
+        <div className="px-5 py-5 sm:px-6">
+          <div className="grid gap-4 sm:grid-cols-3">
+            <Field label="Projeto">
+              <select className={fieldClass()} value={form.projeto} onChange={e => onChange('projeto', e.target.value)}>
+                <option value="">Selecione...</option>
+                <SelectOptionList options={lookups.projetos} />
+              </select>
+            </Field>
+            <Field label="Setor Solicitante *">
+              <select className={fieldClass()} value={form.setor} onChange={e => onChange('setor', e.target.value)} required>
+                <option value="">Selecione...</option>
+                <SelectOptionList options={lookups.setores} />
+              </select>
+            </Field>
+            <div>
+              <div className="mb-1 flex items-center justify-between">
+                <span className={labelClass()}>Prazo de Entrega<span className="text-red-500"> *</span></span>
+                {!deadlineMessage && (
+                  <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600">
+                    Prazo mínimo: {formatSlaDaysLabel(requesterSlaDays)}
+                  </span>
+                )}
+              </div>
+              <input
+                className={fieldClass()}
+                type="datetime-local"
+                min={minimumDeadline}
+                step={60}
+                value={form.prazoEntrega}
+                onChange={e => onChange('prazoEntrega', e.target.value)}
+                required
+              />
+            </div>
+          </div>
+          {deadlineMessage ? (
+            <div className="mt-4 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2.5 text-sm font-medium text-red-700">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{deadlineMessage}</span>
+            </div>
+          ) : null}
         </div>
-        <div className="md:col-span-2 xl:col-span-3">
-          <Field label="Observações">
-            <textarea className={areaClass()} value={form.observacoes} onChange={event => onChange('observacoes', event.target.value)} />
-          </Field>
+
+        {/* 2. Responsáveis */}
+        <div className="px-5 pb-5 sm:px-6">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label className={labelClass()}>Responsável pela Solicitação<span className="text-red-500"> *</span></label>
+              <div className={`flex h-10 items-center gap-2 rounded-md border px-3 ${nameLocked ? 'border-slate-200 bg-slate-50' : 'border-red-300 bg-white'}`}>
+                <div className="min-w-0 flex-1 overflow-hidden">
+                  {nameLocked ? (
+                    <div className="flex min-w-0 items-baseline gap-2">
+                      <span className="truncate text-sm text-slate-800">
+                        {currentUser?.name || form.solicitanteNome || '—'}
+                      </span>
+                      {currentUser?.email ? (
+                        <span className="shrink-0 text-xs text-slate-400">({currentUser.email})</span>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div className="flex min-w-0 items-baseline gap-2">
+                      <input
+                        className="min-w-0 flex-1 bg-transparent text-sm text-slate-800 outline-none placeholder:text-slate-400"
+                        value={form.solicitanteNome}
+                        onChange={e => onChange('solicitanteNome', e.target.value)}
+                        placeholder="Nome do solicitante..."
+                        autoFocus
+                        required
+                      />
+                      {currentUser?.email ? (
+                        <span className="shrink-0 text-xs text-slate-400">({currentUser.email})</span>
+                      ) : null}
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  title={nameLocked ? 'Clique para editar o nome' : 'Clique para travar o nome'}
+                  className="shrink-0 rounded p-0.5 transition hover:bg-slate-200"
+                  onClick={() => setNameLocked(l => !l)}
+                >
+                  <Lock className={`h-3.5 w-3.5 ${nameLocked ? 'text-slate-400' : 'text-red-500'}`} />
+                </button>
+              </div>
+              {!nameLocked && (
+                <p className="mt-1 text-[11px] text-slate-500">Editando em nome de outro solicitante. O e-mail permanece fixo.</p>
+              )}
+            </div>
+            <Field label="Responsável no Local da Retirada *">
+              <input
+                className={fieldClass()}
+                value={form.responsavelLocal}
+                onChange={e => onChange('responsavelLocal', e.target.value)}
+                placeholder="Ex: Carlos Almoxarife / Ramal 404"
+                required
+              />
+            </Field>
+          </div>
         </div>
-        <div className="md:col-span-2 xl:col-span-3">
-          <div className="block min-w-0">
-            <span className={labelClass()}>Fotos do produto</span>
-            <div className="flex min-w-0 flex-col gap-3 rounded-lg border border-dashed border-slate-300 bg-slate-50 p-3 sm:p-4">
-              <label className={`${buttonClass('secondary')} w-full cursor-pointer sm:w-fit`}>
+
+        {/* 3. Rota */}
+        <div className="px-5 pb-5 sm:px-6">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <RecurringAddressField
+              label="Endereço de Retirada (Origem) *"
+              value={form.enderecoRetirada}
+              options={lookups.enderecos}
+              open={openAddressMenu === 'retirada'}
+              onToggle={() => setOpenAddressMenu(cur => cur === 'retirada' ? null : 'retirada')}
+              onClose={() => setOpenAddressMenu(null)}
+              onChange={v => onChange('enderecoRetirada', v)}
+            />
+            <RecurringAddressField
+              label="Endereço de Entrega (Destino) *"
+              value={form.enderecoEntrega}
+              options={lookups.enderecos}
+              open={openAddressMenu === 'entrega'}
+              onToggle={() => setOpenAddressMenu(cur => cur === 'entrega' ? null : 'entrega')}
+              onClose={() => setOpenAddressMenu(null)}
+              onChange={v => onChange('enderecoEntrega', v)}
+            />
+          </div>
+          {form.enderecoRetirada && form.enderecoEntrega ? (
+            <a
+              href={`https://www.google.com/maps/dir/${encodeURIComponent(form.enderecoRetirada)}/${encodeURIComponent(form.enderecoEntrega)}`}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-blue-600 hover:text-blue-800"
+            >
+              <Route className="h-3 w-3" />
+              Ver no Mapa
+            </a>
+          ) : null}
+        </div>
+
+        {/* 4. Itens */}
+        {freightMode === 'single' ? (
+          <div className="px-5 pb-5 sm:px-6">
+            <div className="space-y-4">
+              <div>
+                <div className="mb-1 flex items-center justify-between">
+                  <span className={labelClass()}>Descreva as quantidades e itens a serem transportados<span className="text-red-500"> *</span></span>
+                  {form.itemDescricao ? (
+                    <button type="button" className="text-[11px] font-medium text-slate-400 hover:text-red-600" onClick={() => onChange('itemDescricao', '')}>
+                      Limpar
+                    </button>
+                  ) : null}
+                </div>
+                <textarea
+                  className={`${areaClass()} min-h-[120px]`}
+                  value={form.itemDescricao}
+                  onChange={e => onChange('itemDescricao', e.target.value)}
+                  placeholder={'Exemplo:\n1x Parachoque traseiro\n2x Molde de alumínio'}
+                  required
+                />
+              </div>
+
+              {(chassisCategories.size > 0 || containersList.length > 0) ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[11px] text-slate-400">Inserir rápido:</span>
+                  {Array.from(chassisCategories.keys()).map(gen => (
+                    <div key={gen} className="relative">
+                      <button
+                        type="button"
+                        className={`inline-flex items-center rounded border px-2.5 py-1 text-xs transition ${selectedChassisCat === gen ? 'border-slate-400 bg-slate-100 text-slate-800' : 'border-slate-200 bg-white text-slate-600 hover:border-slate-400 hover:text-slate-800'}`}
+                        onClick={() => setSelectedChassisCat(cur => cur === gen ? null : gen)}
+                      >
+                        + Carro {gen}
+                      </button>
+                      {selectedChassisCat === gen ? (
+                        <div className="absolute left-0 top-full z-20 mt-1 max-h-48 min-w-36 overflow-y-auto rounded-md border border-slate-200 bg-white py-1 shadow-lg">
+                          <p className="border-b border-slate-100 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">Carro {gen}</p>
+                          {(chassisCategories.get(gen) || []).map(c => (
+                            <button key={c.id} type="button" className="block w-full px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
+                              onClick={() => appendDescription(`1x Carro ${gen} #${c.codigo}`)}>
+                              {c.codigo}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+                  {containersList.length > 0 ? (
+                    <div className="relative">
+                      <button type="button"
+                        className={`inline-flex items-center rounded border px-2.5 py-1 text-xs transition ${containerMenuOpen ? 'border-slate-400 bg-slate-100 text-slate-800' : 'border-slate-200 bg-white text-slate-600 hover:border-slate-400 hover:text-slate-800'}`}
+                        onClick={() => { setContainerMenuOpen(o => !o); setSelectedChassisCat(null); }}>
+                        + Container
+                      </button>
+                      {containerMenuOpen ? (
+                        <div className="absolute left-0 top-full z-20 mt-1 max-h-48 min-w-44 overflow-y-auto rounded-md border border-slate-200 bg-white py-1 shadow-lg">
+                          <p className="border-b border-slate-100 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">Selecione o Container</p>
+                          {containersList.map(c => (
+                            <button key={c.id} type="button" className="block w-full px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
+                              onClick={() => { appendDescription(`1x CNTR (${c.name})`); setContainerMenuOpen(false); }}>
+                              {c.name}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              <div>
+                <label className={labelClass()}>Observações Especiais</label>
+                <textarea
+                  className={areaClass()}
+                  value={form.observacoes}
+                  onChange={e => onChange('observacoes', e.target.value)}
+                  placeholder="Requisitos específicos para motorista, tipo de veículo (baú, sider, plataforma), carga frágil ou restrições de horário de descarga..."
+                />
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="px-5 pb-5 sm:px-6">
+            <div className="mb-3 rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-700">
+              Cada item abaixo gerará uma <strong>solicitação de frete separada</strong>. Os campos padrão (setor, prazo, responsáveis, endereços) se aplicam a todos, a menos que você personalize individualmente.
+            </div>
+            <div className="space-y-3">
+              {batchItems.map((item, index) => (
+                <BatchItemCard
+                  key={item.id}
+                  item={item}
+                  index={index}
+                  lookups={lookups}
+                  chassisCategories={chassisCategories}
+                  containersList={containersList}
+                  minimumDeadline={minimumDeadline}
+                  requesterSlaDays={requesterSlaDays}
+                  canRemove={batchItems.length > 1}
+                  onChange={updates => setBatchItems(prev => prev.map((it, i) => i === index ? { ...it, ...updates } : it))}
+                  onRemove={() => setBatchItems(prev => prev.filter((_, i) => i !== index))}
+                />
+              ))}
+            </div>
+            <button
+              type="button"
+              className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-dashed border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:border-slate-400 hover:bg-slate-50"
+              onClick={() => setBatchItems(prev => [...prev, emptyBatchItem()])}
+            >
+              <Plus className="h-4 w-4" />
+              Adicionar outro frete
+            </button>
+          </div>
+        )}
+
+        {/* 5. Fotos & Documentos */}
+        <div className="px-5 pb-6 sm:px-6">
+          <label className={`${labelClass()} mb-3`}>Foto</label>
+          {filePreviews.length === 0 ? (
+            <label className="flex cursor-pointer flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-slate-300 bg-white py-10 text-center transition hover:border-slate-400 hover:bg-slate-50">
+              <Camera className="h-8 w-8 text-slate-300" />
+              <span className="inline-flex items-center gap-2 rounded border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
                 Escolher arquivos
+              </span>
+              <span className="text-xs text-slate-400">Arraste ou clique para anexar fotos dos itens ou NFe (PNG, JPG, PDF até 15MB)</span>
+              <span className="text-xs italic text-slate-400">Nenhuma foto selecionada até o momento.</span>
+              <input
+                className="sr-only"
+                type="file"
+                accept="image/*,application/pdf"
+                multiple
+                onChange={e => { onFiles(Array.from(e.target.files || [])); e.currentTarget.value = ''; }}
+              />
+            </label>
+          ) : (
+            <div className="space-y-3">
+              <p className="text-xs font-medium text-slate-500">Arquivos selecionados ({files.length})</p>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                {filePreviews.map((preview, i) => (
+                  <div key={`${preview.name}-${i}`} className="relative overflow-hidden rounded border border-slate-200 bg-white">
+                    <img src={preview.url} alt={`Arquivo ${i + 1}`} className="aspect-square w-full object-cover" />
+                    <div className="truncate px-2 py-1 text-[11px] text-slate-600">{preview.name}</div>
+                    <button
+                      className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-white/95 text-slate-500 shadow-sm hover:text-red-600"
+                      type="button"
+                      onClick={() => removeFile(i)}
+                      aria-label={`Remover ${preview.name}`}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <label className="inline-flex cursor-pointer items-center gap-2 rounded border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">
+                <Upload className="h-3.5 w-3.5" />
+                Adicionar mais arquivos
                 <input
                   className="sr-only"
                   type="file"
-                  accept="image/*"
+                  accept="image/*,application/pdf"
                   multiple
-                  onChange={event => {
-                    onFiles(Array.from(event.target.files || []));
-                    event.currentTarget.value = '';
-                  }}
+                  onChange={e => { onFiles([...files, ...Array.from(e.target.files || [])]); e.currentTarget.value = ''; }}
                 />
               </label>
-              <p className="text-sm text-slate-500">{files.length ? `${files.length} foto(s) selecionada(s)` : 'Nenhuma foto selecionada.'}</p>
-              {filePreviews.length ? (
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
-                  {filePreviews.map((preview, index) => (
-                    <div key={`${preview.name}-${index}`} className="relative overflow-hidden rounded-md border border-slate-200 bg-white">
-                      <img src={preview.url} alt={`Foto ${index + 1}`} className="aspect-square w-full object-cover" />
-                      <div className="truncate px-2 py-1 text-[11px] font-semibold text-slate-600">Foto {index + 1}</div>
-                      <button
-                        className="absolute right-1 top-1 flex h-7 w-7 items-center justify-center rounded-full bg-white/95 text-red-600 shadow-sm transition hover:bg-red-50"
-                        type="button"
-                        onClick={() => removeFile(index)}
-                        aria-label={`Remover Foto ${index + 1}`}
-                      >
-                        <X className="h-4 w-4" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
             </div>
-          </div>
-        </div>
-      </div>
-      <div className="flex justify-center border-t border-slate-100 px-4 py-4 sm:justify-end sm:px-5">
-        <button key={saving ? 'saving-national-submit' : 'ready-national-submit'} className={`${buttonClass('primary')} w-full sm:w-auto`} type="submit" disabled={saving} aria-busy={saving}>
-          {saving ? (
-            <>
-              <RefreshCw className="h-4 w-4 animate-spin" />
-              Salvando...
-            </>
-          ) : (
-            <>
-              <Save className="h-4 w-4" />
-              Cadastrar solicitação
-            </>
           )}
-        </button>
+        </div>
+
+      </div>
+
+      {/* Footer actions */}
+      <div className="flex flex-col-reverse gap-2 pb-6 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-2">
+          <button type="button" className={`${buttonClass('secondary')} h-9 px-4 text-sm`} disabled={saving}>
+            <Save className="h-3.5 w-3.5" />
+            Salvar Rascunho
+          </button>
+          {onCancel ? (
+            <button type="button" className={`${buttonClass('secondary')} h-9 px-4 text-sm`} disabled={saving} onClick={onCancel}>
+              Cancelar
+            </button>
+          ) : null}
+        </div>
+        {freightMode === 'single' ? (
+          <button
+            key={saving ? 'saving-national-submit' : 'ready-national-submit'}
+            className={`${buttonClass('primary')} h-10 px-6`}
+            type="submit"
+            disabled={saving}
+            aria-busy={saving}
+          >
+            {saving ? (
+              <><RefreshCw className="h-4 w-4 animate-spin" />Salvando...</>
+            ) : (
+              <><CheckCircle2 className="h-4 w-4" />Cadastrar solicitação</>
+            )}
+          </button>
+        ) : (
+          <button
+            type="button"
+            className={`${buttonClass('primary')} h-10 px-6`}
+            disabled={saving}
+            onClick={async () => {
+              if (!onBatchSubmit) return;
+              const merged = batchItems.map(item => ({
+                ...form,
+                itemDescricao: item.itemDescricao,
+                prazoEntrega: item.prazoEntrega || form.prazoEntrega,
+                enderecoRetirada: item.enderecoRetirada || form.enderecoRetirada,
+                enderecoEntrega: item.enderecoEntrega || form.enderecoEntrega,
+                responsavelLocal: item.responsavelLocal || form.responsavelLocal,
+                observacoes: item.observacoes || form.observacoes,
+              }));
+              await onBatchSubmit(merged);
+              setBatchItems([emptyBatchItem()]);
+            }}
+          >
+            {saving ? (
+              <><RefreshCw className="h-4 w-4 animate-spin" />Salvando...</>
+            ) : (
+              <><CheckCircle2 className="h-4 w-4" />Cadastrar {batchItems.length} solicitaç{batchItems.length === 1 ? 'ão' : 'ões'}</>
+            )}
+          </button>
+        )}
       </div>
     </form>
+    </>
   );
 }
 
@@ -2944,9 +3561,11 @@ function RecurringAddressField({
     )
     : null;
 
+  const addrIsReq = label.endsWith(' *');
+  const addrLabelText = addrIsReq ? label.slice(0, -2) : label;
   return (
     <div className="block min-w-0">
-      <span className={labelClass()}>{label}</span>
+      <span className={labelClass()}>{addrLabelText}{addrIsReq && <span className="text-red-500"> *</span>}</span>
       <div className="relative min-w-0">
         <button
           className="absolute right-1 top-1/2 z-10 inline-flex h-10 -translate-y-1/2 items-center justify-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-3 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-white sm:h-8"
@@ -3117,9 +3736,11 @@ function EditRequestDrawer({
 }
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
+  const isReq = label.endsWith(' *');
+  const labelText = isReq ? label.slice(0, -2) : label;
   return (
     <label className="block min-w-0">
-      <span className={labelClass()}>{label}</span>
+      <span className={labelClass()}>{labelText}{isReq && <span className="text-red-500"> *</span>}</span>
       {children}
     </label>
   );
