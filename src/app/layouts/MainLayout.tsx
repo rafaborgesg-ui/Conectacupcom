@@ -127,8 +127,7 @@ export function MainLayout() {
         className={`${isFreightNationalRoute ? 'min-h-0 lg:min-h-screen' : 'min-h-screen'} bg-gray-50 flex tap-highlight-none`}
         style={layoutStyle}
       >
-        {/* Componente de Prevenção de Zoom */}
-        <ZoomPrevention />
+        {!isFreightNationalRoute ? <ZoomPrevention /> : null}
         
         {/* Alerta de Migração de Banco de Dados */}
         <DatabaseMigrationAlert 

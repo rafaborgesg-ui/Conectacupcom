@@ -3435,21 +3435,28 @@ function RecurringAddressField({
   return (
     <div className="block min-w-0">
       <span className={labelClass()}>{addrLabelText}{addrIsReq && <span className="text-red-500"> *</span>}</span>
-      <div className="relative min-w-0">
-        <button
-          className="absolute right-1 top-1/2 z-10 inline-flex h-10 -translate-y-1/2 items-center justify-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-3 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-white sm:h-8"
-          type="button"
-          onClick={onToggle}
-        >
-          <MapPin className="h-3.5 w-3.5 text-pink-500" />
-          Endereços
-        </button>
+      <div className="relative min-w-0 max-w-full">
+        <div className="flex min-w-0 max-w-full items-stretch overflow-hidden rounded-md border border-slate-200 bg-white transition focus-within:border-red-500 focus-within:ring-2 focus-within:ring-red-100">
+          <input
+            className="box-border block h-12 min-w-0 flex-1 border-0 bg-transparent px-3 text-sm text-slate-900 outline-none placeholder:text-slate-400 sm:h-10"
+            value={value}
+            onChange={event => onChange(event.target.value)}
+          />
+          <button
+            className="m-1 inline-flex h-10 shrink-0 items-center justify-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-3 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-white sm:h-8"
+            type="button"
+            onClick={onToggle}
+            aria-expanded={open}
+          >
+            <MapPin className="h-3.5 w-3.5 text-pink-500" />
+            Endereços
+          </button>
+        </div>
         {open ? (
-          <div className="absolute right-0 top-full z-30 mt-1 w-64 max-w-[calc(100vw-3rem)] overflow-hidden rounded-md border border-slate-200 bg-white py-1 text-sm shadow-lg">
+          <div className="absolute left-0 right-0 top-full z-30 mt-1 max-w-full overflow-hidden rounded-md border border-slate-200 bg-white py-1 text-sm shadow-lg sm:left-auto sm:right-0 sm:w-64">
             {renderMenuContent()}
           </div>
         ) : null}
-        <input className={`${fieldClass()} pr-32`} value={value} onChange={event => onChange(event.target.value)} />
       </div>
     </div>
   );
