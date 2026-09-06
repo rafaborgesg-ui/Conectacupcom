@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { createPortal } from 'react-dom';
 import * as XLSX from 'xlsx';
 import {
   AlertTriangle,
@@ -1991,7 +1990,7 @@ function FreightPage({ mode }: { mode: FreightMode }) {
     : null;
 
   return (
-    <div className="overflow-x-clip bg-slate-50 px-3 pb-0 pt-3 sm:p-4 md:p-6">
+    <div className="bg-slate-50 p-3 sm:p-4 md:p-6">
       <div className="mx-auto w-full min-w-0 max-w-7xl space-y-5">
         {showPageHeader ? (
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -3431,23 +3430,6 @@ function RecurringAddressField({
       </button>
     </>
   );
-  const mobileMenu = open && typeof document !== 'undefined'
-    ? createPortal(
-      <>
-        <button
-          className="fixed inset-0 z-[9998] bg-transparent sm:hidden"
-          type="button"
-          aria-label="Fechar endereços"
-          onClick={onClose}
-        />
-        <div className="fixed left-4 right-4 top-1/2 z-[9999] max-h-[70dvh] -translate-y-1/2 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 text-sm shadow-2xl sm:hidden">
-          {renderMenuContent()}
-        </div>
-      </>,
-      document.body
-    )
-    : null;
-
   const addrIsReq = label.endsWith(' *');
   const addrLabelText = addrIsReq ? label.slice(0, -2) : label;
   return (
@@ -3463,12 +3445,9 @@ function RecurringAddressField({
           Endereços
         </button>
         {open ? (
-          <>
-            {mobileMenu}
-            <div className="absolute right-0 top-full z-30 mt-1 hidden w-64 overflow-hidden rounded-md border border-slate-200 bg-white py-1 text-sm shadow-lg sm:block">
-              {renderMenuContent()}
-            </div>
-          </>
+          <div className="absolute right-0 top-full z-30 mt-1 w-64 max-w-[calc(100vw-3rem)] overflow-hidden rounded-md border border-slate-200 bg-white py-1 text-sm shadow-lg">
+            {renderMenuContent()}
+          </div>
         ) : null}
         <input className={`${fieldClass()} pr-32`} value={value} onChange={event => onChange(event.target.value)} />
       </div>
